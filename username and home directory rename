@@ -1,0 +1,57 @@
+---
+- name: Rename existing Linux users
+  hosts: all
+  become: true
+  vars:
+    users_to_rename:
+      - old: username
+        new: username_new
+      - old: username1
+        new: username1_new
+
+  tasks:
+
+    - name: Check if each old username exists
+      command: "getent passwd {{ item.old }}"
+      loop: "{{ users_to_rename }}"
+      register: passwd_check
+      changed_when: false
+      failed_when: false
+
+    - name: Build list of existing users to rename
+      set_fact:
+        existing_users: >-
+          {{
+            passwd_check.results
+            | selectattr('rc', 'equalto', 0)
+            | map(attribute='item')
+            | list
+          }}
+
+    - name: Get user info from /etc/passwd for each existing user
+      command: "getent passwd {{ item.old }}"
+      loop: "{{ existing_users }}"
+      register: user_info
+      changed_when: false
+
+    - name: Build mapping of old username to home directory (safely)
+      set_fact:
+        user_home_map: "{{ user_home_map | default({}) | combine({ item.item.old: (item.stdout.split(':')[5] if (':' in item.stdout and item.stdout.split(':')|length > 5) else '/home/' + item.item.old) }) }}"
+      loop: "{{ user_info.results }}"
+      when: item.rc == 0
+
+    - name: Rename users and move their home directories
+      vars:
+        old_home: "{{ user_home_map[item.old] }}"
+        new_home: "/home/{{ item.new }}"
+      command: "usermod -l {{ item.new }} -d {{ new_home }} -m {{ item.old }}"
+      loop: "{{ existing_users }}"
+      loop_control:
+        label: "{{ item.old }}"
+
+    - name: Rename group if it matches old username
+      command: "groupmod -n {{ item.new }} {{ item.old }}"
+      loop: "{{ existing_users }}"
+      loop_control:
+        label: "{{ item.old }}"
+      ignore_errors: true
